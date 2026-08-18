@@ -378,6 +378,43 @@
 
                         </div>
 
+                        {{-- SHA-256 Checksum --}}
+                        <div class="col-md-6">
+
+                            <div class="detail-row">
+
+                                <div class="detail-label">
+                                    SHA-256 Checksum
+                                </div>
+
+                                <div class="detail-value">
+
+                                    @if($upload->checksum)
+
+                                    <code class="small text-break">
+                                        {{ $upload->checksum }}
+                                    </code>
+
+                                    {{-- Integrity Verification Result --}}
+                                    <div
+                                        id="integrityResult"
+                                        class="mt-2">
+                                    </div>
+
+                                    @else
+
+                                    <span class="text-muted">
+                                        Not available
+                                    </span>
+
+                                    @endif
+
+                                </div>
+
+                            </div>
+
+                        </div>
+
 
                         {{-- Status --}}
                         <div class="col-md-6">
@@ -489,6 +526,21 @@
 
                         </a>
 
+                        @if($upload->checksum)
+
+                        <button
+                            type="button"
+                            class="btn btn-outline-success action-btn px-4"
+                            id="verifyIntegrityBtn">
+
+                            <i class="bi bi-shield-check me-1"></i>
+
+                            Verify Integrity
+
+                        </button>
+
+                        @endif
+
                         @endif
 
 
@@ -526,6 +578,118 @@
 
     <script
         src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js">
+    </script>
+
+    <script>
+        const verifyButton = document.getElementById(
+            'verifyIntegrityBtn'
+        );
+
+        const integrityResult = document.getElementById(
+            'integrityResult'
+        );
+
+        if (verifyButton && integrityResult) {
+
+            verifyButton.addEventListener(
+                'click',
+                async function() {
+
+                    const originalHtml = this.innerHTML;
+
+                    this.disabled = true;
+
+                    this.innerHTML = `
+                    <span
+                        class="spinner-border spinner-border-sm me-1">
+                    </span>
+                    Verifying...
+                `;
+
+                    integrityResult.innerHTML = '';
+
+                    try {
+
+                        const response = await fetch(
+                            "{{ route('api.uploads.verify', $upload) }}"
+                        );
+
+                        const result = await response.json();
+
+                        if (result.verified) {
+
+                            integrityResult.innerHTML = `
+                            <div class="alert alert-success mt-3 mb-0">
+
+                                <i class="bi bi-shield-check me-2"></i>
+
+                                <strong>
+                                    Integrity Verified
+                                </strong>
+
+                                <br>
+
+                                <small>
+                                    The physical file matches its
+                                    stored SHA-256 checksum.
+                                </small>
+
+                            </div>
+                        `;
+
+                        } else {
+
+                            integrityResult.innerHTML = `
+                            <div class="alert alert-danger mt-3 mb-0">
+
+                                <i class="bi bi-shield-x me-2"></i>
+
+                                <strong>
+                                    Integrity Check Failed
+                                </strong>
+
+                                <br>
+
+                                <small>
+                                    The physical file does not match
+                                    the stored checksum.
+                                </small>
+
+                            </div>
+                        `;
+                        }
+
+                    } catch (error) {
+
+                        console.error(error);
+
+                        integrityResult.innerHTML = `
+                        <div class="alert alert-danger mt-3 mb-0">
+
+                            <i class="bi bi-exclamation-circle me-2"></i>
+
+                            <strong>
+                                Verification Error
+                            </strong>
+
+                            <br>
+
+                            <small>
+                                Unable to verify file integrity.
+                            </small>
+
+                        </div>
+                    `;
+
+                    } finally {
+
+                        this.disabled = false;
+
+                        this.innerHTML = originalHtml;
+                    }
+                }
+            );
+        }
     </script>
 
 </body>

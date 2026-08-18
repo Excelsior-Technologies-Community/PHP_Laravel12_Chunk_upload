@@ -5,13 +5,12 @@ namespace App\Http\Controllers;
 use App\Models\Upload;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class UploadController extends Controller
 {
     /**
-     * Normal file upload API.
-     *
-     * This keeps POST /api/upload working.
+     * Normal/package file upload API.
      */
     public function upload(Request $request)
     {
@@ -25,12 +24,49 @@ class UploadController extends Controller
 
         $file = $request->file('file');
 
-        $originalName = $file->getClientOriginalName();
+        /*
+        |--------------------------------------------------------------------------
+        | File Information
+        |--------------------------------------------------------------------------
+        */
+
+        $originalName = basename(
+            $file->getClientOriginalName()
+        );
+
+        $safeName = preg_replace(
+            '/[^A-Za-z0-9._-]/',
+            '_',
+            $originalName
+        );
+
+        if (!$safeName) {
+            $safeName = 'uploaded_file';
+        }
+
         $extension = $file->getClientOriginalExtension();
+
         $mimeType = $file->getMimeType();
+
         $fileSize = $file->getSize();
 
-        $storedName = time() . '_' . $originalName;
+        /*
+        |--------------------------------------------------------------------------
+        | Unique Stored Name
+        |--------------------------------------------------------------------------
+        */
+
+        $storedName = time()
+            . '_'
+            . uniqid()
+            . '_'
+            . $safeName;
+
+        /*
+        |--------------------------------------------------------------------------
+        | Store File
+        |--------------------------------------------------------------------------
+        */
 
         $filePath = $file->storeAs(
             'uploads',
@@ -38,15 +74,58 @@ class UploadController extends Controller
             'public'
         );
 
-        $upload = Upload::create([
-            'file_name' => $storedName,
-            'original_name' => $originalName,
-            'file_path' => $filePath,
-            'mime_type' => $mimeType,
-            'extension' => $extension,
-            'file_size' => $fileSize,
-            'status' => 'completed',
-        ]);
+        /*
+        |--------------------------------------------------------------------------
+        | Calculate SHA-256
+        |--------------------------------------------------------------------------
+        */
+
+        try {
+            $absolutePath = Storage::disk('public')
+                ->path($filePath);
+
+            $checksum = hash_file(
+                'sha256',
+                $absolutePath
+            );
+        } catch (Throwable $e) {
+            Storage::disk('public')->delete(
+                $filePath
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to calculate file checksum.',
+            ], 500);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
+        | Save Database Record
+        |--------------------------------------------------------------------------
+        */
+
+        try {
+            $upload = Upload::create([
+                'file_name' => $storedName,
+                'original_name' => $originalName,
+                'file_path' => $filePath,
+                'mime_type' => $mimeType,
+                'extension' => $extension,
+                'file_size' => $fileSize,
+                'checksum' => $checksum,
+                'status' => 'completed',
+            ]);
+        } catch (Throwable $e) {
+            Storage::disk('public')->delete(
+                $filePath
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'File uploaded but upload history could not be saved.',
+            ], 500);
+        }
 
         return response()->json([
             'success' => true,
@@ -56,7 +135,9 @@ class UploadController extends Controller
                 'file_name' => $upload->file_name,
                 'original_name' => $upload->original_name,
                 'file_size' => $upload->file_size,
-                'url' => Storage::disk('public')->url($filePath),
+                'checksum' => $upload->checksum,
+                'url' => Storage::disk('public')
+                    ->url($filePath),
             ],
         ]);
     }
@@ -75,12 +156,31 @@ class UploadController extends Controller
         */
 
         if ($request->filled('search')) {
-            $search = trim($request->search);
+            $search = trim(
+                $request->search
+            );
 
             $query->where(function ($q) use ($search) {
-                $q->where('original_name', 'like', "%{$search}%")
-                    ->orWhere('file_name', 'like', "%{$search}%")
-                    ->orWhere('extension', 'like', "%{$search}%");
+                $q->where(
+                    'original_name',
+                    'like',
+                    "%{$search}%"
+                )
+                    ->orWhere(
+                        'file_name',
+                        'like',
+                        "%{$search}%"
+                    )
+                    ->orWhere(
+                        'extension',
+                        'like',
+                        "%{$search}%"
+                    )
+                    ->orWhere(
+                        'checksum',
+                        'like',
+                        "%{$search}%"
+                    );
             });
         }
 
@@ -152,7 +252,7 @@ class UploadController extends Controller
         }
 
         $uploads = $query
-            ->oldest()
+            ->latest()
             ->paginate($perPage)
             ->withQueryString();
 
@@ -244,7 +344,10 @@ class UploadController extends Controller
      */
     public function show(Upload $upload)
     {
-        return view('uploads.show', compact('upload'));
+        return view(
+            'uploads.show',
+            compact('upload')
+        );
     }
 
     /**
@@ -254,7 +357,7 @@ class UploadController extends Controller
     {
         /*
         |--------------------------------------------------------------------------
-        | Delete physical file
+        | Delete Physical File
         |--------------------------------------------------------------------------
         */
 
@@ -271,7 +374,7 @@ class UploadController extends Controller
 
         /*
         |--------------------------------------------------------------------------
-        | Delete database record
+        | Delete Database Record
         |--------------------------------------------------------------------------
         */
 
