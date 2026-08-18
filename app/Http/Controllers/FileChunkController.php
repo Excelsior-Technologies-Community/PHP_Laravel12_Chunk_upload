@@ -31,15 +31,15 @@ class FileChunkController extends Controller
 
         $chunkNumber = $validated['chunk_number'];
 
-        $chunkPath = $this->getChunkPath(
-            $sessionId
-        );
+        $totalChunks = $validated['total_chunks'];
 
         /*
         |--------------------------------------------------------------------------
         | Store Chunk
         |--------------------------------------------------------------------------
         */
+
+        $chunkPath = $this->getChunkPath($sessionId);
 
         $chunkFile = $request->file('chunk');
 
@@ -59,13 +59,13 @@ class FileChunkController extends Controller
         if (
             $this->hasAllChunks(
                 $sessionId,
-                $validated['total_chunks']
+                $totalChunks
             )
         ) {
             return $this->assembleFile(
                 $sessionId,
                 $validated['filename'],
-                $validated['total_chunks']
+                $totalChunks
             );
         }
 
@@ -87,9 +87,7 @@ class FileChunkController extends Controller
 
         $sessionId = $validated['session_id'];
 
-        $chunkPath = $this->getChunkPath(
-            $sessionId
-        );
+        $chunkPath = $this->getChunkPath($sessionId);
 
         if (
             !Storage::disk('local')->exists(
@@ -126,6 +124,98 @@ class FileChunkController extends Controller
             'uploaded_chunks' => $uploadedChunks,
             'total_uploaded' => $uploadedChunks->count(),
         ]);
+    }
+
+    /**
+     * Verify the integrity of an uploaded file.
+     *
+     * Recalculates SHA-256 checksum from the physical file
+     * and compares it with the checksum stored in database.
+     */
+    public function verify(Upload $upload)
+    {
+        if (!$upload->file_path) {
+            return response()->json([
+                'success' => false,
+                'verified' => false,
+                'message' => 'File path is not available.',
+            ], 404);
+        }
+
+        $disk = Storage::disk('public');
+
+        if (!$disk->exists($upload->file_path)) {
+            return response()->json([
+                'success' => false,
+                'verified' => false,
+                'message' => 'Physical file could not be found.',
+            ], 404);
+        }
+
+        try {
+            $absolutePath = $disk->path(
+                $upload->file_path
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Calculate Current SHA-256
+            |--------------------------------------------------------------------------
+            */
+
+            $currentChecksum = hash_file(
+                'sha256',
+                $absolutePath
+            );
+
+            /*
+            |--------------------------------------------------------------------------
+            | Compare With Database
+            |--------------------------------------------------------------------------
+            */
+
+            $verified = hash_equals(
+                (string) $upload->checksum,
+                (string) $currentChecksum
+            );
+
+            Log::info(
+                'File integrity verification completed.',
+                [
+                    'upload_id' => $upload->id,
+                    'filename' => $upload->original_name,
+                    'verified' => $verified,
+                ]
+            );
+
+            return response()->json([
+                'success' => true,
+                'verified' => $verified,
+                'message' => $verified
+                    ? 'File integrity verified successfully.'
+                    : 'File integrity verification failed.',
+                'data' => [
+                    'upload_id' => $upload->id,
+                    'stored_checksum' => $upload->checksum,
+                    'current_checksum' => $currentChecksum,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            Log::error(
+                'File integrity verification failed.',
+                [
+                    'upload_id' => $upload->id,
+                    'filename' => $upload->original_name,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'verified' => false,
+                'message' => 'Unable to verify file integrity.',
+            ], 500);
+        }
     }
 
     /**
@@ -197,12 +287,6 @@ class FileChunkController extends Controller
             $originalFilename
         );
 
-        /*
-        |--------------------------------------------------------------------------
-        | Prevent Empty Filename
-        |--------------------------------------------------------------------------
-        */
-
         if (!$safeFilename) {
             $safeFilename = 'uploaded_file';
         }
@@ -257,11 +341,6 @@ class FileChunkController extends Controller
         |--------------------------------------------------------------------------
         | Assemble Binary File
         |--------------------------------------------------------------------------
-        |
-        | We use fopen/fwrite instead of Storage::append().
-        | This prevents extra line breaks from being inserted
-        | into binary files such as images, videos and PDFs.
-        |
         */
 
         $output = fopen(
@@ -337,7 +416,6 @@ class FileChunkController extends Controller
 
             fclose($output);
         } catch (Throwable $e) {
-
             fclose($output);
 
             if (file_exists($absolutePath)) {
@@ -380,12 +458,45 @@ class FileChunkController extends Controller
 
         /*
         |--------------------------------------------------------------------------
+        | NEW: Calculate SHA-256 Checksum
+        |--------------------------------------------------------------------------
+        |
+        | The complete assembled file is hashed here.
+        |
+        */
+
+        try {
+            $checksum = hash_file(
+                'sha256',
+                $absolutePath
+            );
+        } catch (Throwable $e) {
+            if (file_exists($absolutePath)) {
+                unlink($absolutePath);
+            }
+
+            Log::error(
+                'File checksum generation failed.',
+                [
+                    'session_id' => $sessionId,
+                    'filename' => $originalFilename,
+                    'error' => $e->getMessage(),
+                ]
+            );
+
+            return response()->json([
+                'success' => false,
+                'message' => 'Unable to calculate file integrity checksum.',
+            ], 500);
+        }
+
+        /*
+        |--------------------------------------------------------------------------
         | Save Upload History
         |--------------------------------------------------------------------------
         */
 
         try {
-
             $upload = Upload::create([
                 'file_name' => $storedFilename,
                 'original_name' => $originalFilename,
@@ -393,18 +504,14 @@ class FileChunkController extends Controller
                 'mime_type' => $mimeType,
                 'extension' => $extension,
                 'file_size' => $fileSize,
+                'checksum' => $checksum,
                 'status' => 'completed',
             ]);
         } catch (Throwable $e) {
-
             /*
             |--------------------------------------------------------------------------
             | Database Failed
             |--------------------------------------------------------------------------
-            |
-            | Delete the physical file so we don't leave an
-            | untracked file in storage.
-            |
             */
 
             if (
@@ -454,6 +561,7 @@ class FileChunkController extends Controller
                 'chunks' => $totalChunks,
                 'upload_id' => $upload->id,
                 'size' => $fileSize,
+                'checksum' => $checksum,
             ]
         );
 
@@ -469,6 +577,7 @@ class FileChunkController extends Controller
             'upload_id' => $upload->id,
             'file_name' => $originalFilename,
             'size' => $fileSize,
+            'checksum' => $checksum,
             'url' => $disk->url($finalPath),
         ]);
     }
