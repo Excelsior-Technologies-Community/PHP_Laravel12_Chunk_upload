@@ -13,6 +13,7 @@ class Upload extends Model
         'mime_type',
         'extension',
         'file_size',
+        'checksum',
         'status',
     ];
 

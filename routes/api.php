@@ -5,7 +5,42 @@ use App\Http\Controllers\UploadController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('upload')->group(function () {
-    Route::post('/chunk', [FileChunkController::class, 'uploadChunk']);
-    Route::post('/progress', [FileChunkController::class, 'getProgress']);
+
+    /*
+    |--------------------------------------------------------------------------
+    | Custom Chunk Upload
+    |--------------------------------------------------------------------------
+    */
+
+    Route::post(
+        '/chunk',
+        [FileChunkController::class, 'uploadChunk']
+    );
+
+    Route::post(
+        '/progress',
+        [FileChunkController::class, 'getProgress']
+    );
 });
-Route::post('/upload', [UploadController::class, 'upload']);
+
+/*
+|--------------------------------------------------------------------------
+| File Integrity Verification
+|--------------------------------------------------------------------------
+*/
+
+Route::get(
+    '/uploads/{upload}/verify',
+    [FileChunkController::class, 'verify']
+)->name('api.uploads.verify');
+
+/*
+|--------------------------------------------------------------------------
+| Package Upload
+|--------------------------------------------------------------------------
+*/
+
+Route::post(
+    '/upload',
+    [UploadController::class, 'upload']
+);
